@@ -1,6 +1,6 @@
 'use strict';
 window.tingxu = (() => {
- let people={people:[],threshold:.65,margin:.08}, vocab=null, vocabDirty=false, lastBle=null, bleFiles=[], bleSelected=new Set();
+ let people={people:[],threshold:.65,margin:.08}, vocab=null, vocabDirty=false, bleFiles=[], bleSelected=new Set();
  const newId=()=>crypto.randomUUID().replaceAll('-','');
  async function loadPeople(){people=await api('/api/people');renderPeople();}
  function renderPeople(){
@@ -52,11 +52,43 @@ window.tingxu = (() => {
   $('bleFiles').className=bleFiles.length?'':'empty-state';$('bleFiles').innerHTML=bleFiles.length?bleFiles.map(f=>`<label class="ble-file-row"><input type="checkbox" data-ble-name="${esc(f.name)}" ${bleSelected.has(f.name)?'checked':''}><span>${esc(f.name)}</span><small>${size(f.size)} · ${state.local.some(l=>l.stem===f.stem)?'本地已有':'待导入'}</small></label>`).join(''):'最近读取的蓝牙文件列表为空。';
   $('bleFiles').querySelectorAll('input').forEach(c=>c.onchange=()=>{c.checked?bleSelected.add(c.dataset.bleName):bleSelected.delete(c.dataset.bleName);renderBle();});
  }
- function updateBle(tasks){const listing=tasks.find(t=>t.kind==='ble'&&t.status==='done'&&t.result?.list_ok);if(!listing||listing.id===lastBle)return;lastBle=listing.id;bleFiles=listing.result.files||[];bleSelected.clear();renderBle();$('bleListHint').textContent='最近读取：'+listing.started+' · '+bleFiles.length+' 条。选择文件后点击“导入选中”，传输状态见任务中心。';}
+ const flow=window.TingxuBluetooth.createFlow({
+  request: async body=>{const result=await api('/api/ble',body);return result;},
+  onState: info=>{
+   const titles={scanning:'正在扫描附近的录音卡…',connecting:'正在连接并读取文件…',working:'正在执行蓝牙操作…',choose:'请选择设备',ready:'已进入卡上文件管理',done:'操作完成',failed:'本次操作未完成'};
+   $('bleInlineStatus').hidden=false;$('bleInlineStatus').dataset.phase=info.phase;
+   $('bleStatusTitle').textContent=titles[info.phase]||'蓝牙导入';
+   $('bleStatusDetail').textContent=info.message||'请留在当前页面等待，结果会直接显示在这里。';
+   $('bleSpinner').hidden=!info.busy;
+   if(['scanning','connecting'].includes(info.phase))$('bleFileManager').hidden=true;
+   $('blePanel').querySelectorAll('button[data-ble],button[data-record],#bleImportSelected,#bleConnectSelected').forEach(b=>b.disabled=info.busy);
+   if(info.log)$('bleInlineLog').textContent=info.log.join('\n');
+  },
+  onDevices: devices=>{
+   $('bleDevicePicker').hidden=devices.length<2;
+   $('bleDevices').innerHTML=devices.map(d=>`<option value="${esc(d.address)}">${esc(d.name)} · ${esc(d.address)}</option>`).join('');
+  },
+  onFiles: (files,meta)=>{
+   bleFiles=files;bleSelected.clear();renderBle();$('bleFileManager').hidden=false;
+   $('bleListHint').textContent='最近读取：'+meta.started+' · '+files.length+' 条。操作会按需重新连接设备，导入进度显示在当前页面。';
+   if(meta.reveal&&state.view==='card'){$('bleFileManager').scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth',block:'start'});$('bleFileHeading').focus({preventScroll:true});}
+  },
+  onError: showBleError,
+  onComplete: (op)=>{if(op.startsWith('download'))refreshLibrary().then(()=>{renderBle();toast('蓝牙导入完成，本地档案已更新');}).catch(e=>toast(e.message,true));}
+ });
+ function showBleError(error){
+  let dialog=$('bleErrorDialog');if(!dialog){dialog=document.createElement('dialog');dialog.id='bleErrorDialog';document.body.append(dialog);}
+  dialog.innerHTML=`<div class="panel-title"><h2>${esc(error.title)}</h2><button id="bleErrorClose" class="icon-button" aria-label="关闭">×</button></div><p class="hint">请根据下面的建议检查后重试。</p><ul class="ble-advice">${error.advice.map(a=>`<li>${esc(a)}</li>`).join('')}</ul><details><summary>查看错误详情</summary><pre>${esc(error.detail)}</pre></details><div class="button-row"><button id="bleErrorDismiss">知道了</button><button id="bleErrorRetry" class="primary">重试</button></div>`;
+  $('bleErrorClose').onclick=$('bleErrorDismiss').onclick=()=>dialog.close();
+  $('bleErrorRetry').onclick=()=>{dialog.close();flow.retry();};
+  if(!dialog.open)dialog.showModal();
+ }
+ async function runBle(op,extra={}){if(state.tasks.some(t=>t.status==='running')&&!flow.isBusy()){showBleError(window.TingxuBluetooth.explainError('有任务正在运行，请等待完成'));return;}await flow.start(op,extra);await pollTasks();}
+ function updateBle(tasks){flow.update(tasks).catch(e=>showBleError(window.TingxuBluetooth.explainError(e.message)));}
  $('bleSelectAll').onchange=()=>{bleFiles.forEach(f=>$('bleSelectAll').checked?bleSelected.add(f.name):bleSelected.delete(f.name));renderBle();};
- $('bleImportSelected').onclick=act(async()=>{if(!bleSelected.size)throw new Error('请先读取并选择蓝牙文件');await api('/api/ble',{op:'download-selected',names:[...bleSelected]});navigate('tasks');await pollTasks();});
- // Keep the file list in sight after reading; task progress remains in the dock.
- const listButton=document.querySelector('[data-ble="list"]');listButton.onclick=act(async()=>{await api('/api/ble',{op:'list'});toast('正在读取蓝牙文件列表…');await pollTasks();});
+ $('bleImportSelected').onclick=()=>{if(!bleSelected.size){toast('请先选择蓝牙文件',true);return;}runBle('download-selected',{names:[...bleSelected]});};
+ $('bleConnectSelected').onclick=()=>runBle('connect',{address:$('bleDevices').value});
+ document.querySelectorAll('[data-ble],[data-record]').forEach(b=>b.onclick=()=>runBle(b.dataset.record?'record':b.dataset.ble,{record:b.dataset.record||'start',seconds:30}));
  document.querySelectorAll('.nav').forEach(button=>{for(const node of [...button.childNodes]){if(node.nodeType===Node.TEXT_NODE&&node.textContent.trim()){const label=document.createElement('span');label.className='nav-label';label.textContent=node.textContent.trim();button.replaceChild(label,node);}}});
  document.querySelectorAll('.nav').forEach(button=>{const short={library:'档案',card:'录音卡',tasks:'任务',settings:'模型',people:'声纹',vocabulary:'热词',trash:'回收站'};button.dataset.short=short[button.dataset.view];});
  window.addEventListener('beforeunload',event=>{if(vocabDirty){event.preventDefault();event.returnValue='';}});

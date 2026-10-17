@@ -199,9 +199,9 @@ def get(handler, console):
     q = {k: v[0] for k, v in parse_qs(query.query).items()}
     library = Library(console.BASE)
     try:
-        if route in {'/', '/app.js', '/style.css', '/personalization.js'}:
-            name = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/personalization.js': 'personalization.js'}[route]
-            ctype = {'/': 'text/html; charset=utf-8', '/app.js': 'text/javascript; charset=utf-8', '/style.css': 'text/css; charset=utf-8', '/personalization.js': 'text/javascript; charset=utf-8'}[route]
+        if route in {'/', '/app.js', '/style.css', '/personalization.js', '/ble-flow.js'}:
+            name = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/personalization.js': 'personalization.js', '/ble-flow.js': 'ble-flow.js'}[route]
+            ctype = {'/': 'text/html; charset=utf-8', '/app.js': 'text/javascript; charset=utf-8', '/style.css': 'text/css; charset=utf-8', '/personalization.js': 'text/javascript; charset=utf-8', '/ble-flow.js': 'text/javascript; charset=utf-8'}[route]
             handler._send(200, (console.BASE / 'webui' / name).read_bytes(), ctype)
         elif route == '/api/library':
             handler._json({'local': library.files(), 'card': cards(console), 'trash': library.trash_items()})

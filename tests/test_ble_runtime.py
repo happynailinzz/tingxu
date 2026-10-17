@@ -91,3 +91,42 @@ class CollectorDiagnosticTests(unittest.TestCase):
         with patch.object(collector, 'ble_python', return_value='fixture-python'), patch.object(collector.subprocess, 'run', return_value=result):
             with self.assertRaisesRegex(RuntimeError, '系统扫描失败'):
                 collector.ble_reachable()
+
+class ConnectionResultTests(unittest.TestCase):
+    def test_scan_returns_discovery_without_claiming_connection(self):
+        from qs668_ble import parse_devices
+        devices = parse_devices('  AA:BB:CC:DD:EE:FF  QS668 recorder\n  not-an-address wrong\n')
+        self.assertEqual(len(devices), 1)
+        console = console_module()
+        job = console.Job('test-scan', 'ble')
+        def scan(job, label, cmd, cwd):
+            job.ble_devices.extend(devices)
+            return 0
+        with patch.object(console, 'ble_python', return_value='fixture'), patch.object(console, '_stream_step', side_effect=scan):
+            console._run_ble(job, 'scan', '', 30, [])
+        self.assertFalse(job.result['connection_verified'])
+        self.assertEqual(job.result['devices'], devices)
+
+    def test_connect_reads_files_from_explicit_device(self):
+        console = console_module()
+        job = console.Job('test-connect', 'ble')
+        def listing(job, label, cmd, cwd):
+            job.ble_files.append({'name': 'meeting.wav', 'size': 100})
+            return 0
+        with patch.object(console, 'ble_python', return_value='fixture'), patch.object(console, '_stream_step', side_effect=listing) as command:
+            console._run_ble(job, 'connect', '', 30, [], 'AA:BB:CC:DD:EE:FF')
+        self.assertTrue(job.result['connection_verified'])
+        self.assertEqual(command.call_args.args[2][-2:], ['--address', 'AA:BB:CC:DD:EE:FF'])
+        self.assertEqual(job.result['files'][0]['name'], 'meeting.wav')
+
+    def test_failed_connection_cannot_show_file_manager_as_verified(self):
+        console = console_module()
+        job = console.Job('test-connect', 'ble')
+        def failure(job, *args):
+            job.status = 'failed'
+            return 1
+        with patch.object(console, 'ble_python', return_value='fixture'), patch.object(console, '_stream_step', side_effect=failure):
+            console._run_ble(job, 'connect', '', 30, [])
+        self.assertFalse(job.result['connection_verified'])
+        self.assertFalse(job.result['list_ok'])
+        self.assertEqual(job.status, 'failed')

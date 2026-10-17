@@ -141,6 +141,9 @@ def _stream_step(job: Job, label: str, cmd: list[str], cwd: str) -> int:
     for line in p.stdout:  # 已合并 stderr
         recent_output.append(line.rstrip())
         recent_output = recent_output[-12:]
+        if getattr(job, "ble_scanning", False):
+            from qs668_ble import parse_devices
+            job.ble_devices.extend(parse_devices(line))
         if getattr(job, "ble_listing", False):
             from qs668_ble import parse_file_list
             entries = parse_file_list(line)
@@ -209,18 +212,27 @@ def _run_collect(job: Job, mode: str, ble_names: list[str]) -> None:
     job.status = "done" if rc == 0 else "failed"
 
 
-def _run_ble(job: Job, op: str, record: str, seconds: int, names: list[str]) -> None:
+def _run_ble(job: Job, op: str, record: str, seconds: int, names: list[str], address: str = "") -> None:
     ble_py = ble_python(BASE, PY)
     job.add("BLE Python: " + ble_py)
+    address_args = ["--address", address] if address else []
     if op == "scan":
-        _stream_step(job, "BLE 扫描", [ble_py, "-u", str(BRINGUP), "--scan"], str(BASE))
+        job.ble_scanning = True
+        job.ble_devices = []
+        rc = _stream_step(job, "BLE 扫描", [ble_py, "-u", str(BRINGUP), "--scan"], str(BASE))
+        job.result = {"op": op, "devices": job.ble_devices, "connection_verified": False}
+        if rc == 0:
+            job.message = f"扫描完成，发现 {len(job.ble_devices)} 台录音卡"
     elif op == "status":
-        _stream_step(job, "BLE 状态（电量/容量/固件）", [ble_py, "-u", str(BRINGUP), "--status"], str(BASE))
-    elif op == "list":
+        _stream_step(job, "BLE 状态（电量/容量/固件）", [ble_py, "-u", str(BRINGUP), "--status", *address_args], str(BASE))
+    elif op in {"connect", "list"}:
         job.ble_listing = True
         job.ble_files = []
-        rc = _stream_step(job, "列卡上文件", [ble_py, "-u", str(BRINGUP), "--list"], str(BASE))
-        job.result = {"list_ok": rc == 0, "files": job.ble_files}
+        rc = _stream_step(job, "连接录音卡并读取文件", [ble_py, "-u", str(BRINGUP), "--list", *address_args], str(BASE))
+        job.result = {"op": op, "list_ok": rc == 0, "connection_verified": rc == 0,
+                      "files": job.ble_files, "address": address}
+        if rc == 0:
+            job.message = f"连接验证成功，已读取 {len(job.ble_files)} 条录音"
     elif op == "download-all":
         _stream_step(job, "BLE 下载全部", [ble_py, "-u", str(COLLECTOR), "collect", "--mode", "ble"], str(BASE))
     elif op == "download-selected":
@@ -229,9 +241,9 @@ def _run_ble(job: Job, op: str, record: str, seconds: int, names: list[str]) -> 
             cmd += ["--ble-name", n]
         _stream_step(job, f"BLE 下载选中 {len(names)} 项", cmd, str(BASE))
     elif op == "record":
-        _stream_step(job, f"录音控制 {record}", [ble_py, "-u", str(BRINGUP), "--record", "save" if record == "stop" else record], str(BASE))
+        _stream_step(job, f"录音控制 {record}", [ble_py, "-u", str(BRINGUP), "--record", "save" if record == "stop" else record, *address_args], str(BASE))
     elif op == "record-state":
-        _stream_step(job, "读录音状态", [ble_py, "-u", str(BRINGUP), "--record-state"], str(BASE))
+        _stream_step(job, "读录音状态", [ble_py, "-u", str(BRINGUP), "--record-state", *address_args], str(BASE))
     elif op == "realtime":
         _stream_step(job, f"BLE 实时推流 {seconds}s",
                      [ble_py, "-u", str(COLLECTOR), "collect", "--realtime", str(seconds)], str(BASE))
@@ -409,10 +421,17 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"job_id": job.id})
 
         elif self.path == "/api/ble":
+            from qs668_ble import valid_address
+            if body.get("op", "scan") not in {"scan", "connect", "status", "list", "download-all", "download-selected", "record", "record-state", "realtime"}:
+                self._json({"error": "未知蓝牙操作"}, 400)
+                return
+            if body.get("address") and not valid_address(body["address"]):
+                self._json({"error": "无效蓝牙设备地址，请重新扫描"}, 400)
+                return
             job = new_job("ble")
             threading.Thread(target=_job_wrap, args=(job, _run_ble,
                           (job, body.get("op", "scan"), body.get("record", "start"),
-                           int(body.get("seconds", 30)), body.get("names", []))),
+                           int(body.get("seconds", 30)), body.get("names", []), body.get("address", ""))),
                           daemon=True).start()
             self._json({"job_id": job.id})
 
