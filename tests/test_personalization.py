@@ -135,3 +135,18 @@ class BleTests(unittest.TestCase):
                 self.assertEqual(collector.collect_ble([]), 0)
                 self.assertEqual(invoke.call_count, 2)
                 self.assertTrue((audio / 'meeting.wav').is_file())
+
+class BleFailureTests(unittest.TestCase):
+    def test_single_pass_reports_transfer_failure(self):
+        collector = module('qs668-collector.py', 'test_collector_failure')
+        with patch.object(collector, 'find_wired', return_value=None), patch.object(
+                collector, 'ble_reachable', return_value=True), patch.object(collector, 'collect_ble', return_value=1):
+            self.assertEqual(collector.collect('ble', None, None, 0, False, 5, [], 2), 1)
+
+    def test_realtime_failure_is_not_success(self):
+        import subprocess
+        collector = module('qs668-collector.py', 'test_realtime_failure')
+        with tempfile.TemporaryDirectory() as tmp, patch.object(collector, 'AUDIO_DIR', Path(tmp)), patch.object(
+                collector.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, ['fixture'])):
+            with self.assertRaises(subprocess.CalledProcessError):
+                collector.realtime_capture(1)

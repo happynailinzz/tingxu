@@ -348,13 +348,13 @@ def collect_ble(names: list[str], force: bool = False) -> int:
 
 def realtime_capture(seconds: int) -> None:
     """BLE 实时推流（特殊场景：现场直播转写），非文件采集。"""
-    stamp = time.strftime("realtime%Y%m%d-%H%M%S")
+    before = {p.name: p.stat().st_mtime_ns for p in AUDIO_DIR.glob('*') if p.is_file()}
     cmd = [str(ENV_PY), str(BRINGUP), "--realtime", str(seconds), "--out", str(AUDIO_DIR)]
-    print(f"  [realtime] {cmd[2:]} （{seconds}s，完成后落 {AUDIO_DIR}/{stamp}*）", file=sys.stderr)
-    subprocess.run(cmd, cwd=str(BASE))
+    print(f"  [realtime] {cmd[2:]} （{seconds}s，完成后落 {AUDIO_DIR}）", file=sys.stderr)
+    subprocess.run(cmd, cwd=str(BASE), check=True)
     mf = load_manifest()
-    for p in AUDIO_DIR.glob(f"{stamp}.*"):
-        if p.suffix.lower() in (".raw", ".ogg", ".opus", ".wav"):
+    for p in AUDIO_DIR.glob('*'):
+        if p.is_file() and p.suffix.lower() in (".raw", ".ogg", ".opus", ".wav") and before.get(p.name) != p.stat().st_mtime_ns:
             mf["files"][p.stem] = {"status": "done", "source": "ble-realtime",
                                    "path": str(p.relative_to(BASE)), "size": p.stat().st_size,
                                    "collected_at": time.strftime("%Y-%m-%d %H:%M:%S")}
@@ -421,6 +421,7 @@ def collect(mode: str, volume_name: str | None, source_dir: str | None,
         realtime_capture(realtime_s)
         return 0
     while True:
+        remaining = 0
         vol = find_wired(volume_name, source_dir)
         use = mode
         if use == "auto":
