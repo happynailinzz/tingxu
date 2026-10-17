@@ -129,7 +129,7 @@ class BleTests(unittest.TestCase):
                     return SimpleNamespace(returncode=0, stdout='  1. meeting.  size=100 time=0\n', stderr='')
                 out = Path(cmd[cmd.index('--out') + 1]); (out / 'meeting.wav').write_bytes(b'RIFF')
                 return SimpleNamespace(returncode=0)
-            with patch.object(collector, 'BASE', base), patch.object(collector, 'AUDIO_DIR', audio), patch.object(
+            with patch.object(collector, 'ble_python', return_value='fixture-python'), patch.object(collector, 'BASE', base), patch.object(collector, 'AUDIO_DIR', audio), patch.object(
                     collector, 'load_manifest', return_value={'files': {}}), patch.object(collector, 'save_manifest'), patch.object(
                     collector, 'session_flow_event'), patch.object(collector.subprocess, 'run', side_effect=run) as invoke:
                 self.assertEqual(collector.collect_ble([]), 0)
@@ -146,7 +146,7 @@ class BleFailureTests(unittest.TestCase):
     def test_realtime_failure_is_not_success(self):
         import subprocess
         collector = module('qs668-collector.py', 'test_realtime_failure')
-        with tempfile.TemporaryDirectory() as tmp, patch.object(collector, 'AUDIO_DIR', Path(tmp)), patch.object(
+        with tempfile.TemporaryDirectory() as tmp, patch.object(collector, 'ble_python', return_value='fixture-python'), patch.object(collector, 'AUDIO_DIR', Path(tmp)), patch.object(
                 collector.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, ['fixture'])):
             with self.assertRaises(subprocess.CalledProcessError):
                 collector.realtime_capture(1)

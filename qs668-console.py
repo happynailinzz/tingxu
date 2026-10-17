@@ -22,6 +22,7 @@ import time
 import webbrowser
 import uuid
 import qs668_web_api as web_api
+from qs668_runtime import ble_python, failure_detail
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -133,8 +134,13 @@ def _stream_step(job: Job, label: str, cmd: list[str], cwd: str) -> int:
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     except Exception as e:
         job.add(f"  ✗ 起进程失败: {e}")
+        job.status = "failed"
+        job.message = f"{label} 无法启动：{e}"
         return 127
+    recent_output = []
     for line in p.stdout:  # 已合并 stderr
+        recent_output.append(line.rstrip())
+        recent_output = recent_output[-12:]
         if getattr(job, "ble_listing", False):
             from qs668_ble import parse_file_list
             entries = parse_file_list(line)
@@ -156,7 +162,7 @@ def _stream_step(job: Job, label: str, cmd: list[str], cwd: str) -> int:
     p.wait()
     if p.returncode:
         job.status = "failed"
-        job.message = f"{label} 失败（exit={p.returncode}）"
+        job.message = f"{label} 失败（exit={p.returncode}）：{failure_detail(recent_output)}"
     job.add(f"◀ {label} exit={p.returncode}")
     return p.returncode
 
@@ -204,29 +210,31 @@ def _run_collect(job: Job, mode: str, ble_names: list[str]) -> None:
 
 
 def _run_ble(job: Job, op: str, record: str, seconds: int, names: list[str]) -> None:
+    ble_py = ble_python(BASE, PY)
+    job.add("BLE Python: " + ble_py)
     if op == "scan":
-        _stream_step(job, "BLE 扫描", [PY, str(BRINGUP), "--scan"], str(BASE))
+        _stream_step(job, "BLE 扫描", [ble_py, "-u", str(BRINGUP), "--scan"], str(BASE))
     elif op == "status":
-        _stream_step(job, "BLE 状态（电量/容量/固件）", [PY, str(BRINGUP), "--status"], str(BASE))
+        _stream_step(job, "BLE 状态（电量/容量/固件）", [ble_py, "-u", str(BRINGUP), "--status"], str(BASE))
     elif op == "list":
         job.ble_listing = True
         job.ble_files = []
-        rc = _stream_step(job, "列卡上文件", [PY, str(BRINGUP), "--list"], str(BASE))
+        rc = _stream_step(job, "列卡上文件", [ble_py, "-u", str(BRINGUP), "--list"], str(BASE))
         job.result = {"list_ok": rc == 0, "files": job.ble_files}
     elif op == "download-all":
-        _stream_step(job, "BLE 下载全部", [PY, str(COLLECTOR), "collect", "--mode", "ble"], str(BASE))
+        _stream_step(job, "BLE 下载全部", [ble_py, "-u", str(COLLECTOR), "collect", "--mode", "ble"], str(BASE))
     elif op == "download-selected":
-        cmd = [PY, str(COLLECTOR), "collect", "--mode", "ble"]
+        cmd = [ble_py, "-u", str(COLLECTOR), "collect", "--mode", "ble"]
         for n in names:
             cmd += ["--ble-name", n]
         _stream_step(job, f"BLE 下载选中 {len(names)} 项", cmd, str(BASE))
     elif op == "record":
-        _stream_step(job, f"录音控制 {record}", [PY, str(BRINGUP), "--record", "save" if record == "stop" else record], str(BASE))
+        _stream_step(job, f"录音控制 {record}", [ble_py, "-u", str(BRINGUP), "--record", "save" if record == "stop" else record], str(BASE))
     elif op == "record-state":
-        _stream_step(job, "读录音状态", [PY, str(BRINGUP), "--record-state"], str(BASE))
+        _stream_step(job, "读录音状态", [ble_py, "-u", str(BRINGUP), "--record-state"], str(BASE))
     elif op == "realtime":
         _stream_step(job, f"BLE 实时推流 {seconds}s",
-                     [PY, str(COLLECTOR), "collect", "--realtime", str(seconds)], str(BASE))
+                     [ble_py, "-u", str(COLLECTOR), "collect", "--realtime", str(seconds)], str(BASE))
     if job.status != "failed":
         job.status = "done"
 

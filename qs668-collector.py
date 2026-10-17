@@ -40,6 +40,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from qs668_runtime import ble_python, failure_detail
 
 BASE = Path(__file__).resolve().parent
 ARCH = BASE / "nextproto" / "archive"
@@ -136,11 +137,13 @@ def ble_reachable(seconds: int = 2) -> bool:
         "asyncio.run(s())\n"
     )
     try:
-        r = subprocess.run([str(ENV_PY), "-c", code, str(seconds)],
+        r = subprocess.run([ble_python(BASE, ENV_PY), "-c", code, str(seconds)],
                            capture_output=True, text=True, timeout=seconds + 15)
-        return r.stdout.strip() == "1"
-    except Exception:
-        return False
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"BLE 检测无法执行：{exc}") from exc
+    if r.returncode:
+        raise RuntimeError("BLE 系统扫描失败：" + failure_detail((r.stderr or r.stdout).splitlines()))
+    return r.stdout.strip() == "1"
 
 
 # ── 文件处理 ──────────────────────────────────────────────────────
@@ -274,7 +277,7 @@ def collect_ble(names: list[str], force: bool = False) -> int:
     from qs668_ble import parse_file_list, stem_from_name
     mf = load_manifest()
     if not names:
-        listing = subprocess.run([str(ENV_PY), '-u', str(BRINGUP), '--list'],
+        listing = subprocess.run([ble_python(BASE, ENV_PY), '-u', str(BRINGUP), '--list'],
                                  cwd=str(BASE), capture_output=True, text=True, timeout=90)
         print(listing.stdout, end='', flush=True)
         if listing.returncode:
@@ -300,7 +303,7 @@ def collect_ble(names: list[str], force: bool = False) -> int:
     import tempfile
     AUDIO_DIR.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='ble-', dir=str(BASE)) as tmp:
-        base_cmd = [str(ENV_PY), '-u', str(BRINGUP), '--out', tmp, '--filename', ','.join(to_import)]
+        base_cmd = [ble_python(BASE, ENV_PY), '-u', str(BRINGUP), '--out', tmp, '--filename', ','.join(to_import)]
         result = subprocess.run(base_cmd, cwd=str(BASE), text=True)
         for source in Path(tmp).glob('*'):
             if not source.is_file():
@@ -349,7 +352,7 @@ def collect_ble(names: list[str], force: bool = False) -> int:
 def realtime_capture(seconds: int) -> None:
     """BLE 实时推流（特殊场景：现场直播转写），非文件采集。"""
     before = {p.name: p.stat().st_mtime_ns for p in AUDIO_DIR.glob('*') if p.is_file()}
-    cmd = [str(ENV_PY), str(BRINGUP), "--realtime", str(seconds), "--out", str(AUDIO_DIR)]
+    cmd = [ble_python(BASE, ENV_PY), '-u', str(BRINGUP), "--realtime", str(seconds), "--out", str(AUDIO_DIR)]
     print(f"  [realtime] {cmd[2:]} （{seconds}s，完成后落 {AUDIO_DIR}）", file=sys.stderr)
     subprocess.run(cmd, cwd=str(BASE), check=True)
     mf = load_manifest()

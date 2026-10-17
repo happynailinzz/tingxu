@@ -139,3 +139,13 @@ cd nextproto && npm test
 协议工具和 SDK 基于 **NextProto 的 AI recorder card open protocol**，保留其原始 MIT 许可证及协议文档。上游项目：`nextproto1024/ai-recorder-card-open-protocol`；原产品 / 测试平台：`https://nextproto.top/qs668/`。
 
 听序的本地工作台功能采用 MIT 许可证。模型权重、第三方依赖和外部服务遵循各自条款。
+
+### BLE 扫描失败排查
+
+转写与蓝牙可以使用不同的 Python 环境。工作台优先检查 `nextproto/tools/.venv-ble/bin/python`、`.venv-ble/bin/python`，然后检查转写环境和当前 Python；只有能导入 `bleak` 的环境才会被选中。可显式指定：
+
+```bash
+QS668_BLE_PYTHON="/path/to/ble-env/bin/python" python qs668-console.py
+```
+
+环境缺少依赖时，在相应环境运行 `python -m pip install -r requirements-core.txt`。macOS 还需允许启动管理台的应用访问蓝牙。`BLE is unsupported` 表示当前进程未拿到可用的系统 BLE 控制器，不能据此判断录音卡型号不支持；可从本机终端运行扫描排除受限启动环境。任务面板现在会保留具体错误，完整输出可展开日志查看。
