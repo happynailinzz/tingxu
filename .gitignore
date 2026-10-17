@@ -1,0 +1,45 @@
+# Local environments and dependencies
+funasr-env/
+.venv/
+venv/
+node_modules/
+__pycache__/
+*.py[cod]
+.DS_Store
+.cache/
+.publish/
+# Private recordings, transcripts, session data and biometric profiles
+nextproto/archive/*
+!nextproto/archive/.gitkeep
+sessions/
+.voiceprints/
+speakers.json
+speaker-samples.json
+collected-manifest.json
+# Private keys, service state and personalization
+.env
+.env.*
+!.env.example
+.qs668-*
+.tingxu-*
+.web-tasks/
+nextproto/.qs668-device
+*.log
+.batch-*
+# Audio and model weights
+*.wav
+*.opus
+*.ogg
+*.mp3
+*.m4a
+*.flac
+*.aac
+*.webm
+*.mp4
+*.raw
+*.bin
+*.pt
+*.pth
+*.onnx
+*.safetensors
+local.qs668.console.plist

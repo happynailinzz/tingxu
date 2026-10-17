@@ -1,0 +1,4 @@
+# File management, compatible HTTP model services, and BLE device tools.
+bleak>=0.22,<3
+requests>=2.31,<3
+PyYAML>=6,<7

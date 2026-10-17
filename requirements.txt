@@ -1,0 +1,8 @@
+-r requirements-core.txt
+# Local ASR and speaker embeddings; use a supported Python / PyTorch combination.
+funasr>=1.4,<2
+modelscope>=1.20,<2
+torch>=2.5,<3
+torchaudio>=2.5,<3
+numpy>=1.26,<3
+soundfile>=0.12,<1
