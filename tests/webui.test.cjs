@@ -65,3 +65,18 @@ test('refresh restores prior files without replaying errors or moving focus',asy
  assert.equal(f.files[0].meta.reveal,false);assert.equal(f.errors.length,0);
  assert.match(explainError('Bluetooth device is turned off').title,/未开启/);
 });
+
+test('uploaded recording shows a Feishu icon linking to its persistent document',()=>{
+ const action=vm.runInContext('feishuAction',sandbox);
+ const markup=action({brief:true,feishu_url:'https://example.feishu.cn/docx/abc?x=1&y=2'});
+ assert.match(markup,/<img src="\/feishu-docs.jpg"/);
+ assert.match(markup,/href="https:\/\/example.feishu.cn\/docx\/abc\?x=1&amp;y=2"/);
+ assert.match(markup,/aria-label="打开飞书文档（新窗口）"/);
+ assert.match(markup,/target="_blank"/);
+ assert.ok(!markup.includes('id="readerPublish"'));
+ assert.match(action({brief:true}),/id="readerPublish"/);
+ assert.ok(!action({brief:true}).includes('disabled'));
+ assert.match(action({brief:false}),/disabled/);
+ assert.ok(!action({brief:true,feishu_url:'javascript:alert(1)'}).includes('<a'));
+ assert.ok(!action({brief:true,feishu_url:'https://example.feishu.cn/" onclick="evil'}).includes('" onclick="'));
+});

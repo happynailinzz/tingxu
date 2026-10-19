@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Add optional Feishu document publishing after summaries and a manual publish action.
+- Strip archive frontmatter from published Markdown while retaining local metadata.
+- Persist document links and display a compact Feishu document entry in recording details.
+- Align recording toolbar controls and use a two-column layout on phones.
+- Fix npm CLI startup under launchd by including the Node installation directory in PATH.
+
 ## 0.1.0 — 2026-10-17
 
 - Introduce Tingxu (听序), a local recording workspace for QS668 devices and imported audio.

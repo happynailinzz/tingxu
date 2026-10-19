@@ -34,6 +34,7 @@ launchctl kickstart -k "gui/$(id -u)/local.qs668.console"
 - **云端转写**：填写兼容 `/audio/transcriptions` 的基础地址、模型名和 API Key。该模式上传所选音频，最多 100 MB，服务商可能限制更低。JSON 纯文本无逐段时间戳；`verbose_json` 需模型支持。
 - **总结**：使用原有 Hermes 配置中的默认主备服务，或自定义 `/chat/completions` 服务、模型和密钥；只发送转写文本。
 - **提示词**：留空使用默认智能总结模板；自定义内容替换系统提示词，录音元信息与转写正文会自动附上。保存后对新任务生效，已启动任务保留配置快照。
+- **飞书文档**：先运行 `npx @larksuite/cli@latest install`、`lark-cli config init` 和 `lark-cli auth login --recommend` 完成官方 CLI 安装与授权，再在设置中启用。详情页可单独上传已有纪要，或在完整工作流中开启总结后自动上传。只上传纪要 Markdown，不上传音频。任务中心返回可点击的文档链接；文档访问权限仍由飞书自身的分享设置决定。
 
 基础地址通常以 `/v1` 结尾，不要填写完整 `/chat/completions` 路径。模型名称必须是服务实际支持的 ID。保存设置不会请求模型；实际可用性以任务结果为准。
 

@@ -21,6 +21,7 @@ DEFAULTS = {
     'asr': {'mode': 'local', 'profile': 'paraformer-zh', 'model': '',
             'base_url': '', 'api_key': '', 'response_format': 'json'},
     'summary': {'mode': 'default', 'model': '', 'base_url': '', 'api_key': '', 'prompt': ''},
+    'feishu': {'enabled': False, 'cli': 'lark-cli', 'auto_upload': False},
 }
 SETTINGS_LOCK = threading.RLock()
 
@@ -79,14 +80,19 @@ def save_settings(payload, base=BASE):
                 raise ValueError('设置格式不正确')
             for key in DEFAULTS[section]:
                 if key in incoming:
-                    if not isinstance(incoming[key], str):
-                        raise ValueError(f'{section}.{key} 必须为文本')
+                    expected = type(DEFAULTS[section][key])
+                    if not isinstance(incoming[key], expected):
+                        label = '开关' if expected is bool else '文本'
+                        raise ValueError(f'{section}.{key} 必须为{label}')
                     # An empty password field keeps the stored credential.
-                    if key != 'api_key' or incoming[key].strip():
+                    if expected is bool:
+                        result[section][key] = incoming[key]
+                    elif key != 'api_key' or incoming[key].strip():
                         result[section][key] = incoming[key] if key == 'prompt' else incoming[key].strip()
             if incoming.get('clear_key'):
                 result[section]['api_key'] = ''
         a, s = result['asr'], result['summary']
+        f = result['feishu']
         if a['mode'] not in {'local', 'remote'} or s['mode'] not in {'default', 'custom'}:
             raise ValueError('未知模型模式')
         if a['profile'] not in {'paraformer-zh', 'sensevoice', 'custom'}:
@@ -102,6 +108,11 @@ def save_settings(payload, base=BASE):
             raise ValueError('请填写 FunASR 模型 ID 或本地模型路径')
         if len(s['prompt']) > 32000:
             raise ValueError('总结提示词过长（最多 32000 字符）')
+        if not isinstance(f['enabled'], bool) or not isinstance(f['auto_upload'], bool):
+            raise ValueError('飞书选项必须为开关')
+        if not isinstance(f['cli'], str) or not f['cli'].strip() or len(f['cli']) > 500:
+            raise ValueError('请填写有效的飞书 CLI 命令或路径')
+        f['cli'] = f['cli'].strip()
         private_json(base / '.qs668-web-settings.json', result)
     return settings(base, public=True)
 
@@ -181,6 +192,7 @@ class Library:
                 'modified': max((p.stat().st_mtime for p in related), default=0),
                 'duration': meta.get('duration', ''), 'recorded_at': meta.get('recorded_at', ''),
                 'corpus': c.is_file(), 'brief': b.is_file(), 'audio': bool(paths),
+                'feishu_url': labels.get(stem, {}).get('feishu_url', ''),
                 'asr_model': meta.get('model', meta.get('provider', '')),
                 'summary_model': summary_meta.get('model', '')})
         return sorted(result, key=lambda p: p['stem'], reverse=True)
@@ -218,7 +230,17 @@ class Library:
             raise FileNotFoundError('录音不存在')
         with self.lock:
             labels = self.labels()
-            labels[stem] = {'title': title.strip()}
+            labels.setdefault(stem, {})['title'] = title.strip()
+            private_json(self.base / '.qs668-library.json', labels)
+
+    def save_feishu_link(self, stem, url):
+        validate_stem(stem)
+        parsed = urlparse(url)
+        if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError('无效的飞书文档链接')
+        with self.lock:
+            labels = self.labels()
+            labels.setdefault(stem, {})['feishu_url'] = url
             private_json(self.base / '.qs668-library.json', labels)
 
     def import_file(self, name, stream, size):

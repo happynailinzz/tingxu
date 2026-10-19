@@ -1,6 +1,9 @@
 """HTTP routes and serialized workflow jobs for qs668-console."""
 import json
+import os
 import re
+import shutil
+import subprocess
 import threading
 import time
 import uuid
@@ -50,6 +53,10 @@ def run_workflow(console, job, body, cfg):
                 stages.append('转写')
             if action in {'summarize', 'pipeline'}:
                 stages.append('总结')
+            if action == 'publish' and not cfg['feishu']['enabled']:
+                raise ValueError('请先在“模型与提示词”中启用飞书文档')
+            if action == 'publish' or (action == 'pipeline' and cfg['feishu']['enabled'] and cfg['feishu']['auto_upload']):
+                stages.append('上传飞书')
             job.stages = [{'label': s, 'status': 'pending', 'completed': 0, 'total': 0} for s in stages]
             for index, stage in enumerate(job.stages):
                 job.current_stage = index
@@ -107,6 +114,25 @@ def run_workflow(console, job, body, cfg):
                         raise ValueError('请先选择本地录音')
                     stage['total'] = len(stems)
                     job.message = stage['label'] + ' ' + stems[0]
+                    if stage['label'] == '上传飞书':
+                        if not cfg['feishu']['enabled']:
+                            raise ValueError('请先在“模型与提示词”中启用飞书文档')
+                        if not stems:
+                            raise ValueError('请先选择本地录音')
+                        stage['total'] = len(stems)
+                        links = []
+                        job.result = {'stems': stems, 'feishu': links}
+                        for stem in stems:
+                            brief = library.content(stem, 'brief')
+                            title = library.labels().get(stem, {}).get('title', stem)
+                            link = upload_feishu(cfg['feishu']['cli'], brief, title, console.BASE)
+                            library.save_feishu_link(stem, link)
+                            links.append({'stem': stem, 'url': link})
+                            job.add(f'DONE 飞书文档 {stem}: {link}')
+                            stage['completed'] += 1
+                        job.result = {'stems': stems, 'feishu': links}
+                        stage['status'] = 'done'
+                        continue
                     task = 'transcribe' if stage['label'] == '转写' else 'summarize'
                     cmd = [console.PY, '-u', str(console.BASE / 'qs668-web-task.py'), task,
                            *stems, '--settings', str(snapshot)]
@@ -133,7 +159,8 @@ def run_workflow(console, job, body, cfg):
                 stage['status'] = 'done'
             job.status = 'done'
             job.message = '全部阶段完成'
-            job.result = {'stems': stems}
+            if not job.result or 'feishu' not in job.result:
+                job.result = {'stems': stems}
     except Exception:
         for stage in getattr(job, 'stages', []):
             if stage['status'] == 'running':
@@ -141,6 +168,62 @@ def run_workflow(console, job, body, cfg):
         raise
     finally:
         snapshot.unlink(missing_ok=True)
+
+
+def upload_feishu(cli, markdown_path, title, cwd):
+    """Publish only the generated Markdown brief through the official Lark CLI."""
+    executable = shutil.which(cli) if os.path.sep not in cli else cli
+    if not executable or not Path(executable).is_file():
+        raise RuntimeError(f'找不到飞书 CLI：{cli}。请安装 larksuite/cli 并完成登录授权')
+    if not markdown_path.is_file():
+        raise ValueError(f'纪要文件不存在：{markdown_path.name}')
+    markdown_path = markdown_path.resolve()
+    cwd = Path(cwd).resolve()
+    if not markdown_path.is_relative_to(cwd):
+        raise ValueError('纪要文件路径不在工作目录内')
+    content = markdown_path.read_text(encoding='utf-8')
+    # The archive frontmatter tracks models and fingerprints, not document text.
+    content = re.sub(r'\A\ufeff?---[^\S\n]*\n.*?\n---[^\S\n]*(?:\n|\Z)',
+                     '', content, count=1, flags=re.DOTALL).lstrip('\n')
+    command = [executable, 'docs', '+create', '--as', 'user', '--title', title,
+               '--doc-format', 'markdown', '--content', '-']
+    # npm's lark-cli uses /usr/bin/env node. launchd does not inherit the
+    # interactive shell's nvm PATH, even when the CLI has an absolute path.
+    env = os.environ.copy()
+    env['PATH'] = str(Path(executable).absolute().parent) + os.pathsep + env.get('PATH', os.defpath)
+    env['LARKSUITE_CLI_NO_UPDATE_NOTIFIER'] = '1'
+    env['LARKSUITE_CLI_NO_SKILLS_NOTIFIER'] = '1'
+    result = subprocess.run(command, cwd=cwd, input=content, capture_output=True,
+                            env=env, text=True, timeout=120, check=False)
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip()[-1200:]
+        raise RuntimeError('飞书文档创建失败：' + (detail or f'exit={result.returncode}'))
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError('飞书 CLI 未返回有效 JSON，请检查 CLI 版本') from exc
+    def find_url(value):
+        if isinstance(value, dict):
+            if value.get('ok') is False:
+                return None
+            for key in ('url', 'document_url', 'doc_url'):
+                candidate = value.get(key)
+                if isinstance(candidate, str) and candidate.startswith(('https://', 'http://')):
+                    return candidate
+            for child in value.values():
+                found = find_url(child)
+                if found:
+                    return found
+        elif isinstance(value, list):
+            for child in value:
+                found = find_url(child)
+                if found:
+                    return found
+        return None
+    url = find_url(payload)
+    if not url:
+        raise RuntimeError('文档可能已创建，但 CLI 响应中没有文档链接')
+    return url
 
 
 def active(console):
@@ -199,9 +282,9 @@ def get(handler, console):
     q = {k: v[0] for k, v in parse_qs(query.query).items()}
     library = Library(console.BASE)
     try:
-        if route in {'/', '/app.js', '/style.css', '/personalization.js', '/ble-flow.js'}:
-            name = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/personalization.js': 'personalization.js', '/ble-flow.js': 'ble-flow.js'}[route]
-            ctype = {'/': 'text/html; charset=utf-8', '/app.js': 'text/javascript; charset=utf-8', '/style.css': 'text/css; charset=utf-8', '/personalization.js': 'text/javascript; charset=utf-8', '/ble-flow.js': 'text/javascript; charset=utf-8'}[route]
+        if route in {'/', '/app.js', '/style.css', '/personalization.js', '/ble-flow.js', '/feishu-docs.jpg'}:
+            name = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/personalization.js': 'personalization.js', '/ble-flow.js': 'ble-flow.js', '/feishu-docs.jpg': 'feishu-docs.jpg'}[route]
+            ctype = {'/': 'text/html; charset=utf-8', '/app.js': 'text/javascript; charset=utf-8', '/style.css': 'text/css; charset=utf-8', '/personalization.js': 'text/javascript; charset=utf-8', '/ble-flow.js': 'text/javascript; charset=utf-8', '/feishu-docs.jpg': 'image/jpeg'}[route]
             handler._send(200, (console.BASE / 'webui' / name).read_bytes(), ctype)
         elif route == '/api/library':
             handler._json({'local': library.files(), 'card': cards(console), 'trash': library.trash_items()})
@@ -282,7 +365,7 @@ def post(handler, console, body):
         elif route == '/api/models':
             handler._json(save_settings(body, console.BASE))
         elif route == '/api/workflow':
-            if body.get('action') not in {'collect', 'transcribe', 'summarize', 'pipeline'}:
+            if body.get('action') not in {'collect', 'transcribe', 'summarize', 'pipeline', 'publish'}:
                 raise ValueError('未知任务类型')
             if not isinstance(body.get('stems', []), list) or not isinstance(body.get('cards', []), list):
                 raise ValueError('文件列表格式不正确')

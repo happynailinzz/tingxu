@@ -87,6 +87,79 @@ class LibraryTests(unittest.TestCase):
         web.save_settings({'summary': {'clear_key': True}}, self.base)
         self.assertEqual(web.settings(self.base)['summary']['api_key'], '')
 
+    def test_feishu_settings_are_private_and_default_disabled(self):
+        self.assertFalse(web.settings(self.base)['feishu']['enabled'])
+        public = web.save_settings({'feishu': {'enabled': True, 'cli': 'lark-cli', 'auto_upload': True}}, self.base)
+        self.assertTrue(public['feishu']['enabled'])
+        self.assertTrue(public['feishu']['auto_upload'])
+
+    def test_feishu_link_survives_reload_rename_and_recycle(self):
+        self.lib.import_file('meeting.wav', io.BytesIO(b'audio'), 5)
+        url = 'https://example.feishu.cn/docx/abc'
+        self.lib.title('meeting', '会议')
+        self.lib.save_feishu_link('meeting', url)
+        self.lib.title('meeting', '新会议标题')
+        reloaded = web.Library(self.base)
+        self.assertEqual(reloaded.files()[0]['feishu_url'], url)
+        self.assertEqual(reloaded.files()[0]['title'], '新会议标题')
+        batch = reloaded.recycle(['meeting'])
+        reloaded.restore(batch)
+        self.assertEqual(reloaded.files()[0]['feishu_url'], url)
+        for invalid in ['javascript:alert(1)', 'http://example.com/docx/a']:
+            with self.assertRaises(ValueError):
+                reloaded.save_feishu_link('meeting', invalid)
+
+    def test_feishu_cli_upload_returns_url_and_passes_markdown_on_stdin(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            brief = root / 'brief.md'
+            brief.write_text('# 智能纪要\n\n内容', encoding='utf-8')
+            response = SimpleNamespace(returncode=0, stdout=json.dumps({'ok': True, 'data': {'document': {'url': 'https://example.feishu.cn/docx/abc'}}}), stderr='')
+            with patch.object(api.shutil, 'which', return_value='/bin/echo'), patch.object(api.subprocess, 'run', return_value=response) as run:
+                url = api.upload_feishu('lark-cli', brief, '客户会议', root)
+            self.assertEqual(url, 'https://example.feishu.cn/docx/abc')
+            self.assertIn('--doc-format', run.call_args.args[0])
+            self.assertIn('--title', run.call_args.args[0])
+            content_arg = run.call_args.args[0][run.call_args.args[0].index('--content') + 1]
+            self.assertEqual(content_arg, '-')
+            self.assertEqual(run.call_args.kwargs['input'], '# 智能纪要\n\n内容')
+            self.assertEqual(run.call_args.args[0][run.call_args.args[0].index('--title') + 1], '客户会议')
+            self.assertEqual(run.call_args.kwargs['cwd'], root.resolve())
+
+    def test_npm_cli_finds_node_with_launchd_path(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d).resolve()
+            bin_dir = root / 'bin'
+            bin_dir.mkdir()
+            cli = bin_dir / 'lark-cli'
+            cli.write_text('#!/usr/bin/env node\n', encoding='utf-8')
+            cli.chmod(0o700)
+            # A shell fixture stands in for node and proves env can resolve it.
+            node = bin_dir / 'node'
+            node.write_text('#!/bin/sh\ncat >/dev/null\nprintf \'{"ok":true,"data":{"document":{"url":"https://example.feishu.cn/docx/test"}}}\'\n')
+            node.chmod(0o700)
+            brief = root / 'brief.md'
+            brief.write_text('# 测试', encoding='utf-8')
+            with patch.dict(os.environ, {'PATH': '/usr/bin:/bin:/usr/sbin:/sbin'}):
+                url = api.upload_feishu(str(cli), brief, '测试', root)
+            self.assertEqual(url, 'https://example.feishu.cn/docx/test')
+
+    def test_feishu_upload_strips_archive_metadata_preserves_body_and_local_file(self):
+        body = '### 📑 智能总结\n\n会议结论\n\n---\n\n- 行动项\n'
+        for newline, bom in [('\n', ''), ('\r\n', '\ufeff')]:
+            with self.subTest(newline=newline, bom=bom), tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                brief = root / 'brief.md'
+                original = (bom + '---\ntitle: "note20261019-145251"\nprovider: example-provider\n'
+                            'web_config_sha256: "example"\n---\n\n' + body).replace('\n', newline)
+                brief.write_bytes(original.encode('utf-8'))
+                response = SimpleNamespace(returncode=0, stderr='', stdout=json.dumps({
+                    'ok': True, 'data': {'document': {'url': 'https://example.feishu.cn/docx/test'}}}))
+                with patch.object(api.shutil, 'which', return_value='/bin/echo'), patch.object(api.subprocess, 'run', return_value=response) as run:
+                    api.upload_feishu('lark-cli', brief, '会议纪要', root)
+                self.assertEqual(run.call_args.kwargs['input'], body)
+                self.assertEqual(brief.read_bytes(), original.encode('utf-8'))
+
     def test_invalid_model_settings_do_not_save(self):
         with self.assertRaises(ValueError):
             web.save_settings({'asr': {'mode': 'remote', 'base_url': 'file:///etc/passwd', 'model': 'x'}}, self.base)
@@ -94,6 +167,25 @@ class LibraryTests(unittest.TestCase):
 
 
 class TaskTests(unittest.TestCase):
+    def test_publish_workflow_records_stage_and_result_link(self):
+        console_module = module('qs668-console.py', 'test_publish_console')
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            library = web.Library(root)
+            library.brief.mkdir(parents=True)
+            (library.brief / 'meeting.md').write_text('# 智能纪要\n正文', encoding='utf-8')
+            web.save_settings({'feishu': {'enabled': True}}, root)
+            cfg = web.settings(root)
+            job = console_module.Job('publish-test', 'publish')
+            console = SimpleNamespace(BASE=root)
+            with patch.object(api, 'upload_feishu', return_value='https://example.feishu.cn/docx/abc'):
+                api.run_workflow(console, job, {'action': 'publish', 'stems': ['meeting']}, cfg)
+            self.assertEqual(job.status, 'done')
+            self.assertEqual(job.stages[0]['label'], '上传飞书')
+            self.assertEqual(job.stages[0]['status'], 'done')
+            self.assertEqual(job.result['feishu'][0]['url'], 'https://example.feishu.cn/docx/abc')
+            self.assertEqual(web.Library(root).files()[0]['feishu_url'], 'https://example.feishu.cn/docx/abc')
+
     def test_custom_summary_model_prompt_are_sent(self):
         m = module('qs668-summarize.py', 'test_summary')
         response = Mock()
